@@ -4,15 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/disgoorg/disgo"
-	"github.com/disgoorg/disgo/bot"
-	"github.com/disgoorg/disgo/cache"
-	"github.com/disgoorg/disgo/discord"
-	"github.com/disgoorg/disgo/events"
-	"github.com/disgoorg/disgo/gateway"
-	json2 "github.com/disgoorg/disgo/json"
-	"github.com/disgoorg/log"
-	"github.com/disgoorg/snowflake/v2"
 	"io"
 	"net/http"
 	"os"
@@ -21,6 +12,17 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/disgoorg/disgo"
+	"github.com/disgoorg/disgo/bot"
+	"github.com/disgoorg/disgo/cache"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/events"
+	"github.com/disgoorg/disgo/gateway"
+	json2 "github.com/disgoorg/disgo/json"
+	"github.com/disgoorg/disgo/rest"
+	"github.com/disgoorg/log"
+	"github.com/disgoorg/snowflake/v2"
 )
 
 var (
@@ -194,7 +196,7 @@ func onMessage(event *events.GuildMessageCreate) {
 }
 
 func onCommand(event *events.ApplicationCommandInteractionCreate) {
-	data := event.SlashCommandInteractionData()
+	data := event.Data
 	name := data.CommandName()
 	if name == "approve" {
 		channel, _ := event.Channel()
@@ -210,75 +212,110 @@ func onCommand(event *events.ApplicationCommandInteractionCreate) {
 			SetTitle("Would you like to add a comment?").
 			AddActionRow(discord.NewParagraphTextInput("comment", "Your comment")).
 			Build())
+	} else if name == "Approve user" {
+		messageIntData := data.(discord.MessageCommandInteractionData)
+		targetID := messageIntData.TargetID()
+		_ = event.CreateModal(discord.NewModalCreateBuilder().
+			SetCustomID(discord.CustomID("manual-" + targetID.String())).
+			SetTitle("Enter user's public ID").
+			AddActionRow(discord.NewShortTextInput("pub_id", "Public ID").
+				WithRequired(true).
+				WithMinLength(64).
+				WithMaxLength(64)).
+			Build())
 	}
 }
 
 func onModal(event *events.ModalSubmitInteractionCreate) {
 	data := event.Data
-	comment := data.Text("comment")
+	id := data.CustomID.String()
 	client := event.Client().Rest()
-	id := data.CustomID
-	split := strings.Split(id.String(), "-")
-	requestThreadID, _ := snowflake.Parse(split[0])
 	messageBuilder := discord.NewMessageCreateBuilder()
-	if comment != "" {
-		_, err := client.CreateMessage(requestThreadID, messageBuilder.SetContent(comment).Build())
+	user := event.User()
+	if strings.HasPrefix(id, "manual") {
+		messageID := strings.Split(id, "-")[1]
+		parsed, _ := snowflake.Parse(messageID)
+		pubID := data.Text("pub_id")
+		sendApprovedMessage(client, messageBuilder, pubID, user)
+		err := client.AddReaction(requestChannelID, parsed, "✅")
 		if err != nil {
-			log.Errorf("error while sending comment to thread %d: ", requestThreadID, err)
-			_ = event.CreateMessage(messageBuilder.
-				SetContentf("There was an error while sending the comment: %s", err).
-				SetEphemeral(true).
-				Build())
+			log.Errorf("error while reacting to message %d: ", parsed, err)
+		}
+		_ = event.CreateMessage(messageBuilder.
+			SetContentf("Approved **%s**.", pubID).
+			SetEphemeral(true).
+			Build())
+	} else {
+		comment := data.Text("comment")
+		split := strings.Split(id, "-")
+		requestThreadID, _ := snowflake.Parse(split[0])
+		if comment != "" {
+			_, err := client.CreateMessage(requestThreadID, messageBuilder.SetContent(comment).Build())
+			if err != nil {
+				log.Errorf("error while sending comment to thread %d: ", requestThreadID, err)
+				_ = event.CreateMessage(messageBuilder.
+					SetContentf("There was an error while sending the comment: %s", err).
+					SetEphemeral(true).
+					Build())
+			} else {
+				_ = event.CreateMessage(messageBuilder.
+					SetContent("Comment sent.").
+					SetEphemeral(true).
+					Build())
+			}
 		} else {
 			_ = event.CreateMessage(messageBuilder.
-				SetContent("Comment sent.").
+				SetContent("No comment was provided").
 				SetEphemeral(true).
 				Build())
 		}
-	} else {
-		_ = event.CreateMessage(messageBuilder.
-			SetContent("No comment was provided").
-			SetEphemeral(true).
+
+		// send approval message
+		_, err := client.CreateMessage(requestThreadID, messageBuilder.
+			SetContentf("Your request has been approved! Thanks for your patience.").
 			Build())
-	}
+		if err != nil {
+			log.Errorf("error while sending the approval message to thread %d: ", requestThreadID, err)
+		}
 
-	// send approval message
-	_, err := client.CreateMessage(requestThreadID, messageBuilder.
-		SetContentf("Your request has been approved! Thanks for your patience.").
-		Build())
-	if err != nil {
-		log.Errorf("error while sending the approval message to thread %d: ", requestThreadID, err)
-	}
+		// archive original thread
+		_, err = client.UpdateChannel(requestThreadID, discord.GuildThreadUpdate{
+			Archived: json2.NewPtr(true),
+		})
+		if err != nil {
+			log.Errorf("error while archiving original thread %d: ", requestThreadID, err)
+		}
 
-	// archive original thread
-	_, err = client.UpdateChannel(requestThreadID, discord.GuildThreadUpdate{
-		Archived: json2.NewPtr(true),
-	})
-	if err != nil {
-		log.Errorf("error while archiving original thread %d: ", requestThreadID, err)
-	}
+		err = client.AddReaction(requestChannelID, requestThreadID, "✅")
+		if err != nil {
+			log.Errorf("error while reacting to message %d: ", requestThreadID, err)
+		}
 
-	// archive awaiting thread
-	awaitingThreadID := event.ChannelID()
-	_, err = client.UpdateChannel(awaitingThreadID, discord.GuildThreadUpdate{
-		Archived: json2.NewPtr(true),
-	})
-	if err != nil {
-		log.Errorf("error while archiving awaiting thread %d: ", awaitingThreadID, err)
-	}
+		// archive awaiting thread
+		awaitingThreadID := event.ChannelID()
+		_, err = client.UpdateChannel(awaitingThreadID, discord.GuildThreadUpdate{
+			Archived: json2.NewPtr(true),
+		})
+		if err != nil {
+			log.Errorf("error while archiving awaiting thread %d: ", awaitingThreadID, err)
+		}
 
-	// delete awaiting message
-	channel, _ := event.Channel()
-	parent := *channel.(discord.GuildThread).ParentID()
-	err = client.DeleteMessage(parent, awaitingThreadID)
-	if err != nil {
-		log.Errorf("error while deleting awaiting message %d: ", awaitingThreadID, err)
-	}
+		// delete awaiting message
+		channel, _ := event.Channel()
+		parent := *channel.(discord.GuildThread).ParentID()
+		err = client.DeleteMessage(parent, awaitingThreadID)
+		if err != nil {
+			log.Errorf("error while deleting awaiting message %d: ", awaitingThreadID, err)
+		}
 
-	// log the approved request
-	pubID := split[1]
-	_, err = client.CreateMessage(approvedChannelID, messageBuilder.
-		SetContentf("User ID: **%s**\nApproved by %s on <t:%d>.", pubID, event.User().Mention(), time.Now().Unix()).
+		// log the approved request
+		sendApprovedMessage(client, messageBuilder, split[1], user)
+	}
+}
+
+func sendApprovedMessage(client rest.Rest, messageBuilder *discord.MessageCreateBuilder, pubID string, user discord.User) {
+	_, _ = client.CreateMessage(approvedChannelID, messageBuilder.
+		SetContentf("User ID: **%s**\nApproved by %s on <t:%d>.", pubID, user.Mention(), time.Now().Unix()).
 		AddActionRow(discord.NewLinkButton("Open sb.ltn.fi", sbbURL+pubID)).
 		SetAllowedMentions(&discord.AllowedMentions{}).
 		Build())
