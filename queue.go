@@ -124,6 +124,10 @@ func onMessage(event *events.GuildMessageCreate) {
 			SetContent("You already have permission to submit.").
 			SetMessageReferenceByID(messageID).
 			Build())
+		if err != nil {
+			log.Errorf("error while sending \"already approved\" message %d: ", messageID, err)
+		}
+		addSuccessReaction(client, messageID)
 		return
 	}
 	segmentCount := userInfo.SegmentCount
@@ -236,11 +240,15 @@ func onModal(event *events.ModalSubmitInteractionCreate) {
 		messageID := strings.Split(id, "-")[1]
 		parsed, _ := snowflake.Parse(messageID)
 		pubID := data.Text("pub_id")
-		sendApprovedMessage(client, messageBuilder, pubID, user)
-		err := client.AddReaction(requestChannelID, parsed, "✅")
-		if err != nil {
-			log.Errorf("error while reacting to message %d: ", parsed, err)
+		if !publicIDRegex.MatchString(pubID) {
+			_ = event.CreateMessage(messageBuilder.
+				SetContent("Provide a valid public user ID.").
+				SetEphemeral(true).
+				Build())
+			return
 		}
+		sendApprovedMessage(client, messageBuilder, pubID, user)
+		addSuccessReaction(client, parsed)
 		_ = event.CreateMessage(messageBuilder.
 			SetContentf("Approved **%s**.", pubID).
 			SetEphemeral(true).
@@ -278,18 +286,7 @@ func onModal(event *events.ModalSubmitInteractionCreate) {
 			log.Errorf("error while sending the approval message to thread %d: ", requestThreadID, err)
 		}
 
-		// archive original thread
-		_, err = client.UpdateChannel(requestThreadID, discord.GuildThreadUpdate{
-			Archived: json2.NewPtr(true),
-		})
-		if err != nil {
-			log.Errorf("error while archiving original thread %d: ", requestThreadID, err)
-		}
-
-		err = client.AddReaction(requestChannelID, requestThreadID, "✅")
-		if err != nil {
-			log.Errorf("error while reacting to message %d: ", requestThreadID, err)
-		}
+		addSuccessReaction(client, requestThreadID)
 
 		// archive awaiting thread
 		awaitingThreadID := event.ChannelID()
@@ -319,6 +316,13 @@ func sendApprovedMessage(client rest.Rest, messageBuilder *discord.MessageCreate
 		AddActionRow(discord.NewLinkButton("Open sb.ltn.fi", sbbURL+pubID)).
 		SetAllowedMentions(&discord.AllowedMentions{}).
 		Build())
+}
+
+func addSuccessReaction(client rest.Rest, messageID snowflake.ID) {
+	err := client.AddReaction(requestChannelID, messageID, "✅")
+	if err != nil {
+		log.Errorf("error while reacting to message %d: ", messageID, err)
+	}
 }
 
 func ternary[T any](exp bool, ifCond T, elseCond T) T { // https://github.com/aidenwallis/go-utils/blob/main/utils/ternary.go
