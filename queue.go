@@ -290,7 +290,7 @@ func onModal(event *events.ModalSubmitInteractionCreate) {
 
 		// send approval message
 		_, err := client.CreateMessage(requestThreadID, messageBuilder.
-			SetContentf("Your request has been approved! Thanks for your patience. This thread will be automatically archived once you leave it.").
+			SetContentf("Your request has been approved! Thanks for your patience. This thread will be automatically archived in 3 days or once you leave it.").
 			Build())
 		if err != nil {
 			log.Errorf("error while sending the approval message to thread %d: ", requestThreadID, err)
