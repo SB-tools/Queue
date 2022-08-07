@@ -1,10 +1,6 @@
 github.com/davecgh/go-spew v1.1.0 h1:ZDRjVQ15GmhC3fiQ8ni8+OwkZQO4DARzQgrnXU1Liz8=
-github.com/disgoorg/disgo v0.13.12 h1:j6/hU7TzHNuvU7EPGhWWh1hQihmeBsQ/MmUXG5IYkSo=
-github.com/disgoorg/disgo v0.13.12/go.mod h1:Cyip4bCYHD3rHgDhBPT9cLo81e9AMbDe8ocM50UNRM4=
-github.com/disgoorg/disgo v0.13.13-0.20220807133959-1c77a2df2db1 h1:UNfnVNtj82AaCiqG9SwJUP/bS/xdLXU37N+YWZ3kC4c=
-github.com/disgoorg/disgo v0.13.13-0.20220807133959-1c77a2df2db1/go.mod h1:Cyip4bCYHD3rHgDhBPT9cLo81e9AMbDe8ocM50UNRM4=
-github.com/disgoorg/disgo v0.13.14-0.20220807161539-0ff9b5237b7e h1:kn78+6Qmco5+RLymiT06MAGODxpU9llmTDc9yv3pNl4=
-github.com/disgoorg/disgo v0.13.14-0.20220807161539-0ff9b5237b7e/go.mod h1:Cyip4bCYHD3rHgDhBPT9cLo81e9AMbDe8ocM50UNRM4=
+github.com/disgoorg/disgo v0.13.14 h1:zsXz6qHiAGO8K7vFmTjDfAFir372D7VHw2M5AQ+/ZPE=
+github.com/disgoorg/disgo v0.13.14/go.mod h1:Cyip4bCYHD3rHgDhBPT9cLo81e9AMbDe8ocM50UNRM4=
 github.com/disgoorg/log v1.2.0 h1:sqlXnu/ZKAlIlHV9IO+dbMto7/hCQ474vlIdMWk8QKo=
 github.com/disgoorg/log v1.2.0/go.mod h1:3x1KDG6DI1CE2pDwi3qlwT3wlXpeHW/5rVay+1qDqOo=
 github.com/disgoorg/snowflake/v2 v2.0.0 h1:+xvyyDddXmXLHmiG8SZiQ3sdZdZPbUR22fSHoqwkrOA=

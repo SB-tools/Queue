@@ -3,7 +3,7 @@ module sb-queue
 go 1.19
 
 require (
-	github.com/disgoorg/disgo v0.13.14-0.20220807161539-0ff9b5237b7e
+	github.com/disgoorg/disgo v0.13.14
 	github.com/disgoorg/log v1.2.0
 	github.com/disgoorg/snowflake/v2 v2.0.0
 )

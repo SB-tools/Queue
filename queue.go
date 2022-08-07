@@ -10,6 +10,7 @@ import (
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/disgo/gateway"
+	json2 "github.com/disgoorg/disgo/json"
 	"github.com/disgoorg/log"
 	"github.com/disgoorg/snowflake/v2"
 	"io"
@@ -17,19 +18,32 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strings"
 	"syscall"
 	"time"
 )
 
 var (
-	token             = os.Getenv("SB_QUEUE_TOKEN")
-	requestChannelID  = snowflake.ID(1005818150664806480) // TODO change to actual channel id
-	logsChannelID     = snowflake.ID(1005863396874399864)
-	publicIDRegex     = regexp.MustCompile("\\b[a-f0-9]{64}\\b")
-	userInfoURL       = "https://sponsor.ajay.app/api/userInfo?publicUserID=%s&values=[\"userName\",\"segmentCount\",\"ignoredSegmentCount\",\"permissions\"]"
-	sbbURL            = "https://sb.ltn.fi/userid/"
-	jumplinkTemplate  = fmt.Sprintf("https://discord.com/channels/1005818127474491405/%s/", requestChannelID) // TODO change to SB guild id
-	startingMessageID = snowflake.ID(1005225604066574458)
+	token         = os.Getenv("SB_QUEUE_TOKEN")
+	privateUserID = os.Getenv("SB_REQ_USER_ID")
+
+	// channels
+	requestChannelID          = snowflake.ID(1005818150664806480) // TODO change to actual channel id
+	logsChannelID             = snowflake.ID(1005863396874399864)
+	awaitingReviewChannelID   = snowflake.ID(1005879256557043783)
+	awaitingApprovalChannelID = snowflake.ID(1005863036210380911)
+	approvedChannelID         = snowflake.ID(1005863016216150056)
+
+	// roles
+	awaitingReviewRoleID   = snowflake.ID(1005910399276826665)
+	awaitingApprovalRoleID = snowflake.ID(1005910431304532098)
+
+	publicIDRegex      = regexp.MustCompile("\\b[a-f0-9]{64}\\b")
+	userInfoURL        = "https://sponsor.ajay.app/api/userInfo?publicUserID=%s&values=[\"userName\",\"segmentCount\",\"ignoredSegmentCount\",\"permissions\"]"
+	sbbURL             = "https://sb.ltn.fi/userid/"
+	jumplinkTemplate   = fmt.Sprintf("https://discord.com/channels/1005818127474491405/%s/", requestChannelID) // TODO change to SB guild id
+	threadNameTemplate = "%d-%s"
+	startingMessageID  = snowflake.ID(1005225604066574458)
 )
 
 func main() {
@@ -41,7 +55,9 @@ func main() {
 		bot.WithGatewayConfigOpts(gateway.WithIntents(gateway.IntentGuildMessages, gateway.IntentGuilds, gateway.IntentMessageContent)),
 		bot.WithCacheConfigOpts(cache.WithCacheFlags(cache.FlagChannels)),
 		bot.WithEventListeners(&events.ListenerAdapter{
-			OnGuildMessageCreate: onMessage,
+			OnGuildMessageCreate:            onMessage,
+			OnApplicationCommandInteraction: onCommand,
+			OnModalSubmit:                   onModal,
 		}))
 
 	if err != nil {
@@ -111,22 +127,32 @@ func onMessage(event *events.GuildMessageCreate) {
 	segmentCount := userInfo.SegmentCount
 	ignoredSegmentCount := userInfo.IgnoredSegmentCount
 
-	// log the request into a channel
+	// log the request into the logs and an awaiting channel
+	sbbLink := sbbURL + pubID
 	embedBuilder := discord.NewEmbedBuilder()
-	embedBuilder.SetAuthor("Request "+pubID, sbbURL+pubID, author.EffectiveAvatarURL())
+	embedBuilder.SetAuthor("Request "+pubID, sbbLink, author.EffectiveAvatarURL())
+	embedBuilder.SetColor(0xf05d0e) // orange
 	embedBuilder.SetDescriptionf("**Username**: %s\n**Segment Count**: %d\n**Ignored Segment Count**: %d", userInfo.Username, segmentCount, ignoredSegmentCount)
 	embedBuilder.SetTimestamp(time.Now())
-	_, _ = client.CreateMessage(logsChannelID, discord.NewMessageCreateBuilder().
+	embedMessage := discord.NewMessageCreateBuilder().
 		SetEmbeds(embedBuilder.Build()).
-		AddActionRow(discord.NewLinkButton("Jump to message", jumplinkTemplate+messageID.String())).
-		Build())
+		AddActionRow(discord.NewLinkButton("Open sb.ltn.fi", sbbLink),
+			discord.NewLinkButton("Jump to message", jumplinkTemplate+messageID.String())).
+		Build()
+	_, err = client.CreateMessage(logsChannelID, embedMessage)
+	if err != nil {
+		log.Error("error while sending embed to the logs channel: ", err)
+	}
 
+	var awaitingChannelID snowflake.ID
 	messageBuilder.SetContentf("Hi %s. Thank your for your interest in contributing to SponsorBlock!\n\n", author.Mention())
 	if segmentCount == 0 || segmentCount == ignoredSegmentCount {
 		messageBuilder.Content += "You have no submissions on record. If your message doesn't contain a link to a video and timings you want to submit, " +
 			"make sure you post the information **into this thread**/**edit your message if you're on Matrix!**"
+		awaitingChannelID = awaitingReviewChannelID
 	} else {
 		messageBuilder.Content += "It looks like you already meet the minimum requirements for permission to submit."
+		awaitingChannelID = awaitingApprovalChannelID
 	}
 	messageBuilder.Content += "\n\nAll you need to do now is **wait for our review** and we will get back to you **as soon as possible!**"
 	if message.WebhookID == nil {
@@ -138,14 +164,131 @@ func onMessage(event *events.GuildMessageCreate) {
 			log.Error("error while creating thread: ", er)
 			return
 		}
-		_, err = client.CreateMessage(thread.ID(), messageBuilder.Build())
+		threadID := thread.ID()
+		_, err = client.CreateMessage(threadID, messageBuilder.Build()) // send pre-built response to the thread
+		if err != nil {
+			log.Errorf("error while sending pre-built message to thread %d: ", threadID, err)
+		}
+		starter, err := client.CreateMessage(awaitingChannelID, embedMessage)
+		if err != nil {
+			log.Error("error while sending embed to an awaiting channel: ", err)
+		}
+		starterID := starter.ID
+		awaitingThread, err := client.CreateThreadFromMessage(awaitingChannelID, starterID, discord.ThreadCreateFromMessage{
+			Name:                fmt.Sprintf(threadNameTemplate, threadID, pubID),
+			AutoArchiveDuration: discord.AutoArchiveDuration3d,
+		})
+		if err != nil {
+			log.Errorf("error while creating thread from message %d: ", starterID, err)
+		} else {
+			_, err = client.CreateMessage(awaitingThread.ID(), discord.NewMessageCreateBuilder().
+				SetContentf("<@&%d>", ternary(awaitingChannelID == awaitingReviewChannelID, awaitingReviewRoleID, awaitingApprovalRoleID)).
+				Build())
+		}
 	} else {
-		_, err = client.CreateMessage(channelID, messageBuilder.SetMessageReferenceByID(messageID).Build())
+		_, err = client.CreateMessage(channelID, messageBuilder.SetMessageReferenceByID(messageID).Build()) // reply to the message with the pre-built response
+		if err != nil {
+			log.Error("error while sending pre-built message: ", err)
+		}
 	}
+}
+
+func onCommand(event *events.ApplicationCommandInteractionCreate) {
+	data := event.SlashCommandInteractionData()
+	name := data.CommandName()
+	if name == "approve" {
+		channel, _ := event.Channel()
+		if channel.Type() != discord.ChannelTypeGuildPublicThread {
+			_ = event.CreateMessage(discord.NewMessageCreateBuilder().
+				SetContent("Only run this command in a thread targeting a specific public ID.").
+				SetEphemeral(true).
+				Build())
+			return
+		}
+		_ = event.CreateModal(discord.NewModalCreateBuilder().
+			SetCustomID(discord.CustomID(channel.Name())).
+			SetTitle("Would you like to add a comment?").
+			AddActionRow(discord.NewParagraphTextInput("comment", "Your comment")).
+			Build())
+	}
+}
+
+func onModal(event *events.ModalSubmitInteractionCreate) {
+	data := event.Data
+	comment := data.Text("comment")
+	client := event.Client().Rest()
+	id := data.CustomID
+	split := strings.Split(id.String(), "-")
+	requestThreadID, _ := snowflake.Parse(split[0])
+	messageBuilder := discord.NewMessageCreateBuilder()
+	if comment != "" {
+		_, err := client.CreateMessage(requestThreadID, messageBuilder.SetContent(comment).Build())
+		if err != nil {
+			log.Errorf("error while sending comment to thread %d: ", requestThreadID, err)
+			_ = event.CreateMessage(messageBuilder.
+				SetContentf("There was an error while sending the comment: %s", err).
+				SetEphemeral(true).
+				Build())
+		} else {
+			_ = event.CreateMessage(messageBuilder.
+				SetContent("Comment sent.").
+				SetEphemeral(true).
+				Build())
+		}
+	} else {
+		_ = event.CreateMessage(messageBuilder.
+			SetContent("No comment was provided").
+			SetEphemeral(true).
+			Build())
+	}
+
+	// send approval message
+	_, err := client.CreateMessage(requestThreadID, messageBuilder.
+		SetContentf("Your request has been approved! Thanks for your patience.").
+		Build())
 	if err != nil {
-		log.Error("error while creating message: ", err)
-		return
+		log.Errorf("error while sending the approval message to thread %d: ", requestThreadID, err)
 	}
+
+	// archive original thread
+	_, err = client.UpdateChannel(requestThreadID, discord.GuildThreadUpdate{
+		Archived: json2.NewPtr(true),
+	})
+	if err != nil {
+		log.Errorf("error while archiving original thread %d: ", requestThreadID, err)
+	}
+
+	// archive awaiting thread
+	awaitingThreadID := event.ChannelID()
+	_, err = client.UpdateChannel(awaitingThreadID, discord.GuildThreadUpdate{
+		Archived: json2.NewPtr(true),
+	})
+	if err != nil {
+		log.Errorf("error while archiving awaiting thread %d: ", awaitingThreadID, err)
+	}
+
+	// delete awaiting message
+	channel, _ := event.Channel()
+	parent := *channel.(discord.GuildThread).ParentID()
+	err = client.DeleteMessage(parent, awaitingThreadID)
+	if err != nil {
+		log.Errorf("error while deleting awaiting message %d: ", awaitingThreadID, err)
+	}
+
+	// log the approved request
+	pubID := split[1]
+	_, err = client.CreateMessage(approvedChannelID, messageBuilder.
+		SetContentf("User ID: **%s**\nApproved by %s on <t:%d>.", pubID, event.User().Mention(), time.Now().Unix()).
+		AddActionRow(discord.NewLinkButton("Open sb.ltn.fi", sbbURL+pubID)).
+		SetAllowedMentions(&discord.AllowedMentions{}).
+		Build())
+}
+
+func ternary[T any](exp bool, ifCond T, elseCond T) T { // https://github.com/aidenwallis/go-utils/blob/main/utils/ternary.go
+	if exp {
+		return ifCond
+	}
+	return elseCond
 }
 
 type UserInfo struct {
