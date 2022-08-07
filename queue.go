@@ -202,10 +202,11 @@ func onMessage(event *events.GuildMessageCreate) {
 func onCommand(event *events.ApplicationCommandInteractionCreate) {
 	data := event.Data
 	name := data.CommandName()
+	channel, _ := event.Channel()
+	messageBuilder := discord.NewMessageCreateBuilder()
 	if name == "approve" {
-		channel, _ := event.Channel()
 		if channel.Type() != discord.ChannelTypeGuildPublicThread {
-			_ = event.CreateMessage(discord.NewMessageCreateBuilder().
+			_ = event.CreateMessage(messageBuilder.
 				SetContent("Only run this command in a thread targeting a specific public ID.").
 				SetEphemeral(true).
 				Build())
@@ -217,6 +218,13 @@ func onCommand(event *events.ApplicationCommandInteractionCreate) {
 			AddActionRow(discord.NewParagraphTextInput("comment", "Your comment")).
 			Build())
 	} else if name == "Approve user" {
+		if channel.ID() != requestChannelID {
+			_ = event.CreateMessage(messageBuilder.
+				SetContentf("Only run this command in <#%d>.", requestChannelID).
+				SetEphemeral(true).
+				Build())
+			return
+		}
 		messageIntData := data.(discord.MessageCommandInteractionData)
 		targetID := messageIntData.TargetID()
 		_ = event.CreateModal(discord.NewModalCreateBuilder().
