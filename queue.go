@@ -54,12 +54,13 @@ func main() {
 	log.Info("disgo version: ", disgo.Version)
 
 	client, err := disgo.New(token,
-		bot.WithGatewayConfigOpts(gateway.WithIntents(gateway.IntentGuildMessages, gateway.IntentGuilds, gateway.IntentMessageContent)),
-		bot.WithCacheConfigOpts(cache.WithCacheFlags(cache.FlagChannels)),
+		bot.WithGatewayConfigOpts(gateway.WithIntents(gateway.IntentGuildMessages, gateway.IntentGuilds, gateway.IntentMessageContent, gateway.IntentGuildMembers)),
+		bot.WithCacheConfigOpts(cache.WithCacheFlags(cache.FlagChannels, cache.FlagThreadMembers)),
 		bot.WithEventListeners(&events.ListenerAdapter{
 			OnGuildMessageCreate:            onMessage,
 			OnApplicationCommandInteraction: onCommand,
 			OnModalSubmit:                   onModal,
+			OnThreadMemberRemove:            onThreadLeave,
 		}))
 
 	if err != nil {
@@ -89,7 +90,8 @@ func onMessage(event *events.GuildMessageCreate) {
 	if channelID != requestChannelID || author.Bot {
 		return
 	}
-	pubID := publicIDRegex.FindString(message.Content)
+	content := message.Content
+	pubID := publicIDRegex.FindString(content)
 	if pubID == "" {
 		return
 	}
@@ -138,7 +140,7 @@ func onMessage(event *events.GuildMessageCreate) {
 	embedBuilder := discord.NewEmbedBuilder()
 	embedBuilder.SetAuthor("Request "+pubID, sbbLink, author.EffectiveAvatarURL())
 	embedBuilder.SetColor(0xf05d0e) // orange
-	embedBuilder.SetDescriptionf("**Username**: %s\n**Segment Count**: %d\n**Ignored Segment Count**: %d", userInfo.Username, segmentCount, ignoredSegmentCount)
+	embedBuilder.SetDescriptionf("**Username**: %s\n**Segment Count**: %d\n**Ignored Segment Count**: %d\n\n**Message:**```%s```", userInfo.Username, segmentCount, ignoredSegmentCount, content)
 	embedBuilder.SetTimestamp(time.Now())
 	embedMessage := discord.NewMessageCreateBuilder().
 		SetEmbeds(embedBuilder.Build()).
@@ -215,7 +217,7 @@ func onCommand(event *events.ApplicationCommandInteractionCreate) {
 		_ = event.CreateModal(discord.NewModalCreateBuilder().
 			SetCustomID(discord.CustomID(channel.Name())).
 			SetTitle("Would you like to add a comment?").
-			AddActionRow(discord.NewParagraphTextInput("comment", "Your comment")).
+			AddActionRow(discord.NewParagraphTextInput("comment", "Your comment").WithMaxLength(2000)).
 			Build())
 	} else if name == "Approve user" {
 		if channel.ID() != requestChannelID {
@@ -288,7 +290,7 @@ func onModal(event *events.ModalSubmitInteractionCreate) {
 
 		// send approval message
 		_, err := client.CreateMessage(requestThreadID, messageBuilder.
-			SetContentf("Your request has been approved! Thanks for your patience.").
+			SetContentf("Your request has been approved! Thanks for your patience. This thread will be automatically archived once you leave it.").
 			Build())
 		if err != nil {
 			log.Errorf("error while sending the approval message to thread %d: ", requestThreadID, err)
@@ -315,6 +317,29 @@ func onModal(event *events.ModalSubmitInteractionCreate) {
 
 		// log the approved request
 		sendApprovedMessage(client, messageBuilder, split[1], user)
+	}
+}
+
+func onThreadLeave(event *events.ThreadMemberRemove) { // if the requester leaves the thread, archive it
+	client := event.Client()
+	threadID := event.ThreadID
+	thread, _ := client.Caches().Channels().GetGuildPublicThread(threadID)
+	if thread.OwnerID != client.ApplicationID() || *thread.ParentID() != requestChannelID {
+		return
+	}
+	restClient := client.Rest()
+	message, err := restClient.GetMessage(requestChannelID, threadID)
+	if err != nil {
+		log.Error("error while getting thread starter message: ", err)
+		return
+	}
+	if message.Author.ID == event.ThreadMemberID {
+		_, err = restClient.UpdateChannel(threadID, discord.GuildThreadUpdate{
+			Archived: json2.NewPtr(true),
+		})
+		if err != nil {
+			log.Errorf("error while archiving original thread %d: ", threadID, err)
+		}
 	}
 }
 
