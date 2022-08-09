@@ -215,7 +215,7 @@ func onCommand(event *events.ApplicationCommandInteractionCreate) {
 			return
 		}
 		_ = event.CreateModal(discord.NewModalCreateBuilder().
-			SetCustomID(discord.CustomID(channel.Name())).
+			SetCustomID(channel.Name()).
 			SetTitle("Would you like to add a comment?").
 			AddActionRow(discord.NewParagraphTextInput("comment", "Your comment").WithMaxLength(2000)).
 			Build())
@@ -230,7 +230,7 @@ func onCommand(event *events.ApplicationCommandInteractionCreate) {
 		messageIntData := data.(discord.MessageCommandInteractionData)
 		targetID := messageIntData.TargetID()
 		_ = event.CreateModal(discord.NewModalCreateBuilder().
-			SetCustomID(discord.CustomID("manual-" + targetID.String())).
+			SetCustomID("manual-" + targetID.String()).
 			SetTitle("Enter user's public ID").
 			AddActionRow(discord.NewShortTextInput("pub_id", "Public ID").
 				WithRequired(true).
@@ -242,7 +242,7 @@ func onCommand(event *events.ApplicationCommandInteractionCreate) {
 
 func onModal(event *events.ModalSubmitInteractionCreate) {
 	data := event.Data
-	id := data.CustomID.String()
+	id := data.CustomID
 	client := event.Client().Rest()
 	messageBuilder := discord.NewMessageCreateBuilder()
 	user := event.User()
